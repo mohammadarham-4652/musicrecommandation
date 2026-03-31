@@ -16,8 +16,45 @@ export default function App() {
   const [customVibe, setCustomVibe] = useState('');
   const [recommendations, setRecommendations] = useState<SongRecommendation[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<'selection' | 'results' | 'favorites' | 'documentation'>('selection');
-  const [favorites, setFavorites] = useState<SongRecommendation[]>([]);
+  const [favorites, setFavorites] = useState<SongRecommendation[]>(() => {
+    const saved = localStorage.getItem('listen-heart-favorites');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('listen-heart-favorites', JSON.stringify(favorites));
+  }, [favorites]);
+
+  useEffect(() => {
+    const checkApiKey = async () => {
+      let apiKey = process.env.GEMINI_API_KEY;
+      
+      // If not available in process.env (build-time), try fetching from backend (runtime)
+      if (!apiKey || apiKey === "" || apiKey.includes("MY_GEMINI_API_KEY")) {
+        try {
+          const response = await fetch('/api/config');
+          if (response.ok) {
+            const config = await response.json();
+            if (config.geminiApiKey && config.geminiApiKey !== "" && !config.geminiApiKey.includes("MY_GEMINI_API_KEY")) {
+              apiKey = config.geminiApiKey;
+              // We need to set it globally for geminiService to pick it up if it's using process.env
+              (window as any).GEMINI_API_KEY = apiKey;
+            }
+          }
+        } catch (err) {
+          console.error("Failed to fetch API key from backend:", err);
+        }
+      }
+
+      if (!apiKey || apiKey === "" || apiKey.includes("MY_GEMINI_API_KEY")) {
+        setError("Gemini API key is missing. Please add a secret named 'GEMINI_API_KEY' in the AI Studio Secrets panel (gear icon).");
+      }
+    };
+
+    checkApiKey();
+  }, []);
 
   const toggleFavorite = (song: SongRecommendation) => {
     setFavorites(prev => {
@@ -34,12 +71,14 @@ export default function App() {
     if (!selectedMood && !customVibe) return;
     
     setIsLoading(true);
+    setError(null);
     try {
       const results = await getMoodRecommendations(selectedMood || 'Unknown', customVibe);
       setRecommendations(results);
       setView('results');
-    } catch (error) {
-      console.error('Failed to get recommendations:', error);
+    } catch (err: any) {
+      console.error('Failed to get recommendations:', err);
+      setError(err.message || 'Failed to generate recommendations. Please check your API key or try again later.');
     } finally {
       setIsLoading(false);
     }
@@ -97,6 +136,25 @@ export default function App() {
 
               {/* Search / Vibe Input */}
               <section className="mb-16">
+                {error && (
+                  <div className="mb-6 p-4 bg-error/10 border border-error/20 rounded-xl flex items-center justify-between gap-3 text-error text-sm">
+                    <div className="flex items-center gap-3">
+                      <span className="material-symbols-outlined">error</span>
+                      <p>{error}</p>
+                    </div>
+                    {error.includes("missing") ? null : (
+                      <button 
+                        onClick={() => {
+                          setError(null);
+                          handleGenerate();
+                        }}
+                        className="text-xs font-bold uppercase tracking-widest hover:underline"
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                )}
                 <div className="relative group">
                   <div className="absolute inset-y-0 left-5 flex items-center pointer-events-none">
                     <span className="material-symbols-outlined text-primary/50 group-focus-within:text-primary transition-colors">auto_awesome</span>
@@ -150,8 +208,14 @@ export default function App() {
               {/* Primary Action */}
               <div className="mt-20 flex justify-center">
                 <button 
-                  onClick={handleGenerate}
-                  disabled={isLoading || (!selectedMood && !customVibe)}
+                  onClick={() => {
+                    if (!selectedMood && !customVibe) {
+                      setError("Please select a mood or type a vibe description first.");
+                      return;
+                    }
+                    handleGenerate();
+                  }}
+                  disabled={isLoading}
                   className="gold-gradient px-12 py-5 rounded-full text-on-primary-fixed font-bold text-lg shadow-2xl hover:scale-105 active:scale-95 transition-all duration-200 flex items-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <span>{isLoading ? 'Curating...' : 'Generate Recommendations'}</span>
@@ -186,7 +250,9 @@ export default function App() {
                   <p>
                     Listen Heart is an AI-powered sonic curator designed to bridge the gap between human emotion and digital music libraries. 
                     By analyzing your current state of mind or a specific atmospheric description, our system synthesizes a unique 7-track 
-                    journey tailored to your exact frequency.
+                    journey tailored to your exact frequency. 
+                    <br /><br />
+                    <span className="text-primary/60 text-xs italic">Note: The microphone icon in the header serves as a shortcut to this guide.</span>
                   </p>
                 </div>
 
@@ -248,7 +314,21 @@ export default function App() {
                 <h2 className="font-headline text-5xl md:text-7xl font-bold tracking-tighter leading-none mb-4">
                   Favorite <br /><span className="italic text-primary/80">Melodies</span>
                 </h2>
-                <div className="w-24 h-px bg-primary/30 mt-6 mb-8"></div>
+                <div className="flex justify-between items-end">
+                  <div className="w-24 h-px bg-primary/30 mb-8"></div>
+                  {favorites.length > 0 && (
+                    <button 
+                      onClick={() => {
+                        if (window.confirm('Are you sure you want to clear all favorites?')) {
+                          setFavorites([]);
+                        }
+                      }}
+                      className="text-error font-label text-[10px] uppercase tracking-widest hover:underline mb-8"
+                    >
+                      Clear All
+                    </button>
+                  )}
+                </div>
               </section>
 
               {favorites.length === 0 ? (
@@ -289,15 +369,6 @@ export default function App() {
                           </span>
                         </div>
                         <p className="text-on-surface-variant text-[11px] mt-1 italic mb-3">{song.reason}</p>
-                        <a 
-                          href={`https://open.spotify.com/search/${encodeURIComponent(`${song.title} ${song.artist}`)}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-2 text-[10px] font-label uppercase tracking-widest text-primary hover:text-primary-fixed transition-colors border border-primary/20 px-3 py-1.5 rounded-full hover:bg-primary/5"
-                        >
-                          <span className="material-symbols-outlined text-sm">play_circle</span>
-                          Listen on Spotify
-                        </a>
                       </div>
                     </div>
                   ))}
@@ -363,15 +434,6 @@ export default function App() {
                         <p className="text-on-surface-variant text-sm leading-relaxed max-w-lg mb-4">
                           {song.reason}
                         </p>
-                        <a 
-                          href={`https://open.spotify.com/search/${encodeURIComponent(`${song.title} ${song.artist}`)}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="gold-gradient inline-flex items-center gap-2 px-6 py-3 rounded-full text-on-primary-fixed font-bold text-xs uppercase tracking-widest shadow-lg hover:scale-105 transition-transform"
-                        >
-                          <span className="material-symbols-outlined">play_circle</span>
-                          Listen on Spotify
-                        </a>
                       </div>
                     </div>
                   ) : null
@@ -403,15 +465,6 @@ export default function App() {
                           </span>
                         </div>
                         <p className="text-on-surface-variant text-[11px] mt-1 italic mb-3">{song.reason}</p>
-                        <a 
-                          href={`https://open.spotify.com/search/${encodeURIComponent(`${song.title} ${song.artist}`)}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-2 text-[10px] font-label uppercase tracking-widest text-primary hover:text-primary-fixed transition-colors border border-primary/20 px-3 py-1.5 rounded-full hover:bg-primary/5"
-                        >
-                          <span className="material-symbols-outlined text-sm">play_circle</span>
-                          Listen on Spotify
-                        </a>
                       </div>
                     </div>
                   ))}
